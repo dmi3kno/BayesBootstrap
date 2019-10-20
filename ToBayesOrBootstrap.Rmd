@@ -1,0 +1,243 @@
+---
+title: "To Bayes or to Bootstrap – that is the question"
+author: "Ullrika Sahlin, Dmytro Perepolkin"
+date: "18 October 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+
+```
+
+# About this tutorial 
+
+This tutorial compares Bayesian inference with the Bootstrap. Bootstrap is a method that frequentists often use to get estimation errors or probability intervals to their estimates, when that doesn’t follow automatically from the analysis. Thus, when you want things you always can get by Bayesian inference. I will discuss in what way it may be easier or more difficult to embrace a bootstrap compared to a Bayesian analysis using general mixed models for illustration. My conclusion is that Bayesian inference is a coherent principles for inference and more straightforward to implement than bootstrap added to a frequentist analysis. 
+
+The tutorial produced for **BayesDays at Liverpool 2019**.
+```{r ll, message=FALSE, error=FALSE, warning=FALSE}
+library(readr)
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(tidyr) # note that you need to update to current CRAN version
+library(modelr)
+library(tidybayes)
+library(lme4)
+library(brms)
+library(future)
+theme_set(theme_minimal())
+
+```
+## Read in data
+We will use a data set on birds in agricultural landscape. The data is taken from this publication: 
+*Stjernman, M., Sahlin, U., Olsson, O., and Smith, H. G.. 2019. Estimating effects of arable land use intensity on farmland birds using joint species modeling. Ecological Applications 29( 4):e01875. 10.1002/eap.1875*
+
+### Load data
+
+Let's load the data and have a look at it.
+```{r bird}
+df <- read_csv2("data/DataEcologicalApplications_jan2019.csv")
+
+glimpse(df)
+```
+## Model description
+We want to build a model that predict **abundance of skylark** as a function of **agricultural area** and **landscape complexity**. The effect of agricultural land and landscape complexity on skylark is treated as a fixed effect. Abundance is a count variable so therefore we will do a Poisson regression. Data are collected in different sites (**landscapes**) and by different birdwatchers (**observer**). Unexplained variation due to landscape and observer are treated as random effects. 
+
+Since the response is a count variable and we have both fixed and random effects we will use a Generalized Linear Mixed Model (GLMM).
+
+Before continuing, we will scale one of the predictors (to improve convergence), give a generic name on the response variable (to easily replace it with other species) and create a categorical variable of one of the predictions (for plotting).
+```{r addbird}
+df <- df %>% 
+  mutate(sFarml_area = as.vector(scale(Farml.area))) %>% 
+  rename(birdcount = countSk) %>% 
+  mutate(landscape_type = cut(LHI, breaks=c(-10,0.5,10),
+                              labels=c('simple','complex')))
+```
+
+### Plot the data
+```{r studydata, fig.width=10}
+p1 <- ggplot(df, aes(x = Farml.area, y = birdcount)) + 
+  geom_point(size = 3,aes(colour = landscape_type))+
+  geom_smooth(method = loess)+
+  theme(legend.position="bottom")
+
+p2 <- ggplot(df, aes(x = LHI, y = birdcount)) + 
+  geom_point(size = 3,aes(colour = Farml.area))+
+  geom_smooth(method = loess)+
+  theme(legend.position="bottom")
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+```
+
+# Classical inference 
+Let us first see how this model can be parametrised using classical (likelihood-based) inference. We estimate parameters of the GLMM using `glmer()` in the `lme4` R-package. 
+```{r mod}
+mod <- glmer(birdcount ~ sFarml_area * LHI + (1|landscape) + (1|observer) + offset(log(npoint)), 
+             data = df, family = poisson)
+summary(mod)
+```
+
+## Extracting information from the model
+We can extract the fixed effects using fixef(mod) and random effects using ranef(mod). In order to get the variance for the random effects we write 
+```{r var_randomeffect}
+getME(mod,'theta')
+```
+
+## Check the model 
+### Study residuals and goodnes-of-fit
+```{r res, fig.width=10}
+par(mfrow=c(1,2)) 
+hist(resid(mod)); plot(resid(mod))
+
+p1 <- ggplot(df, aes(x=birdcount, y=resid(mod))) + 
+  geom_point(size=3, aes(colour = landscape_type))+
+  geom_smooth(method=loess) +
+  geom_hline(aes(yintercept = 0),col='red')+
+  theme(legend.position = "bottom")
+
+df <- df %>% 
+  add_predictions(mod, var="fit", type='response')
+
+p2 <- ggplot(df,aes(x=fit,y=birdcount)) +
+         geom_point(size = 3, aes(colour = landscape_type)) +
+         geom_abline(col='blue',lwd = 1.12)+
+  theme(legend.position = "bottom")
+gridExtra::grid.arrange(p1, p2, ncol=2)
+```
+
+## Making predictions
+### Predict training data
+Make predictions of bird counts for the data we have. Predictions can be made with estimated random effects, but are provided without errors or uncertainty ranges.  
+
+What are in the different columns?
+```{r pred_of_data}
+df %>% 
+  select(birdcount) %>% 
+  mutate(all_random_effects=predict(mod, type='response', re.form=NULL),
+         landscape_random_effect=predict(mod,type = 'response',re.form = ~(1|landscape)),
+         no_random_effects=predict(mod,type = 'response',re.form = NA))
+
+```
+
+### Predict new data
+Make predictions of bird counts for new data. First we create a new data set. Then we use the predict-function. The random effect is zero by default and still no uncertainty provided with the predictions.
+```{r pred_of_newdata}
+newdata <- data_grid(df, sFarml_area = seq_range(sFarml_area, 20),
+                         LHI = c(-2, 1), npoint = 16) %>% 
+    mutate(landscape_type=cut(LHI,breaks=c(-10,0.5,10),
+                            labels=c('simple','complex')))
+
+birdcount <- predict(mod, newdata=newdata, re.form = NA, type = 'response')
+head(birdcount)
+```
+
+## Use bootstrap to predict with uncertainty 
+We can perform model-based (semi-)parametric bootstrap of our mixed model (Poisson regression) using using `bootMer()` in `lme4` package.
+
+### Predict with estimation error
+```{r boot}
+bm <- bootMer(mod, FUN = function(.){predict(., newdata=newdata, re.form = NA, type = 'response')}, nsim = 100 )
+```
+
+The bootstrap returns a sample for each prediction. 
+```{r, fig.width=10}
+head(bm$t[,1:6])
+hist(bm$t[,1])
+```
+
+Plot bird abundance over farmland area.
+```{r predplot,fig.width=10}
+df_pred1 <- newdata %>%
+  add_draws(draws = bm$t, value = ".prediction")
+
+df %>% 
+  ggplot(aes(x = sFarml_area, y = birdcount, color = landscape_type, fill = landscape_type)) +
+  geom_point(aes(x = sFarml_area, y = birdcount)) +
+  stat_lineribbon(data=df_pred1, aes(y = .prediction), .width = c(.95, .80, .50), alpha = 1/4) +
+  facet_wrap(~landscape_type) +
+  labs(title = 'Bird abundance over farmland area', subtitle = "Frequentist inference + Bootstrap")
+```
+
+### Predict with estimation error and landscape variability 
+To include uncertainty from landscape random effect we draw random normally distributed values to the predictions. 
+```{r boot_r}
+bm.withlandscaperandom <- bootMer(mod, FUN = function(.){
+  log_count <- predict(., newdata=newdata, re.form = NA, type = 'link') + rnorm(nrow(newdata),0,sqrt(getME(mod,'theta')[1]))
+  exp(log_count)}, nsim = 100 )
+```
+
+### Plot
+```{r predplot2, fig.width=10}
+df_pred2 <- newdata %>% 
+  add_draws(draws = bm.withlandscaperandom$t, value = ".prediction")
+
+df %>% 
+  ggplot(aes(x = sFarml_area, y = birdcount, color = landscape_type, fill = landscape_type)) +
+  geom_point(aes(x = sFarml_area, y = birdcount)) +
+  stat_lineribbon(data=df_pred2, aes(y = .prediction), .width = c(.95, .80, .50), alpha = 1/4) +
+  facet_wrap(~landscape_type) +
+  labs(title = 'Bird abundance over farmland area including landscape variability', subtitle = "Frequentist inference + Bootstrap")
+
+```
+
+# Bayesian inference
+A Bayesian version of the GLMM is implemented in the `brms` R-package, which uses almost the same syntax as `lme4`. A stan model is created as a C++ code and the brm-function calls STAN for **MCMC sampling**. 
+
+```{r bayes}
+future::plan("multiprocess")
+bmod <- brm(birdcount ~ sFarml_area * LHI + (1|landscape) + (1|observer) + offset(log(npoint)), 
+            data = df, family = poisson(), future = TRUE, silent = TRUE)
+```
+
+## Study the model
+```{r bayes_post}
+summary(bmod)
+```
+
+## Make predictions with uncertainty
+```{r bayes_pred}
+df_pred_b1 <- df %>%
+  data_grid(sFarml_area = seq_range(sFarml_area, n = 20), 
+            LHI = c(-2,1), landscape = NA, observer = NA, npoint = 16) %>%
+  mutate(landscape_type=cut(LHI,breaks=c(-10,0.5,10), labels=c('simple','complex'))) %>% 
+    add_predicted_draws(bmod, value =".prediction", re_formula = NA)
+
+```
+
+### Plot 
+```{r bayes_plot, fig.width=10}
+df %>%
+  ggplot(aes(x = sFarml_area, y = birdcount, color = landscape_type, fill = landscape_type)) +
+  geom_point(aes(x = sFarml_area, y = birdcount)) +
+  stat_lineribbon(data=df_pred_b1, aes(y = .prediction), .width = c(.95, .80, .50), alpha = 1/4) +
+  facet_wrap(~landscape_type) + 
+  labs(title = 'Bird abundance over farmland area', subtitle = "Bayesian inference")
+```
+
+## Predict with uncertainty including landscape variability 
+```{r bayes_pred2}
+df_pred_b2 <- df %>%
+  data_grid(sFarml_area = seq_range(sFarml_area, n = 20), 
+            LHI = c(-2,1), landscape = NA, observer = NA, npoint = 16) %>%
+  mutate(landscape_type=cut(LHI,breaks=c(-10,0.5,10), labels=c('simple','complex'))) %>% 
+  add_predicted_draws(bmod, value =".prediction", re_formula = ~(1|landscape),allow_new_levels = TRUE) 
+```
+
+### Plot 
+```{r bayes_plot2, fig.width=10}
+df %>%
+  ggplot(aes(x = sFarml_area, y = birdcount, color = landscape_type, fill = landscape_type)) +
+  geom_point(aes(x = sFarml_area, y = birdcount)) +
+  stat_lineribbon(data=df_pred_b2, aes(y = .prediction), .width = c(.95, .80, .50), alpha = 1/4) +
+  facet_wrap(~landscape_type) + 
+  labs(title = 'Bird abundance over farmland area including landscape variability', subtitle = "Bayesian inference")
+
+```
+
+# Comparison
+Is there a difference in predictions using the two approaches?
+
+Yes, but not much. 
+
