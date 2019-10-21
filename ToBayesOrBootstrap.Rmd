@@ -1,8 +1,9 @@
 ---
-title: "To Bayes or to Bootstrap – that is the question"
-author: "Ullrika Sahlin, Dmytro Perepolkin"
+title: "To Bayes or to Bootstrap - that is the question"
+author: "Ullrika Sahlin and Dmytro Perepolkin, Lund University"
 date: "18 October 2019"
-output: html_document
+output:
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -12,7 +13,7 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE)
 
 # About this tutorial 
 
-This tutorial compares Bayesian inference with the Bootstrap. Bootstrap is a method that frequentists often use to get estimation errors or probability intervals to their estimates, when that doesn’t follow automatically from the analysis. Thus, when you want things you always can get by Bayesian inference. I will discuss in what way it may be easier or more difficult to embrace a bootstrap compared to a Bayesian analysis using general mixed models for illustration. My conclusion is that Bayesian inference is a coherent principles for inference and more straightforward to implement than bootstrap added to a frequentist analysis. 
+This tutorial compares quantifying epistemic uncertainty by Bayesian inference with the Bootstrap method. Bootstrap is a method that frequentists often use to get estimation errors or probability intervals to their estimates, when that doesn’t follow automatically from the analysis. The Bootstrap method generates a sample from a test statistic/parameter or variable of interest. You always get a probability distribution or sample with Bayesian inference. We discuss in what way it may be easier or more difficult to embrace a bootstrap compared to a Bayesian analysis using a general mixed model for illustration. Our conclusion is that Bayesian inference is a coherent principle for inference and more straightforward to implement than the Bootstrap method added to a frequentist analysis. 
 
 The tutorial produced for **BayesDays at Liverpool 2019**.
 ```{r ll, message=FALSE, error=FALSE, warning=FALSE}
@@ -42,7 +43,9 @@ df <- read_csv2("data/DataEcologicalApplications_jan2019.csv")
 glimpse(df)
 ```
 ## Model description
-We want to build a model that predict **abundance of skylark** as a function of **agricultural area** and **landscape complexity**. The effect of agricultural land and landscape complexity on skylark is treated as a fixed effect. Abundance is a count variable so therefore we will do a Poisson regression. Data are collected in different sites (**landscapes**) and by different birdwatchers (**observer**). Unexplained variation due to landscape and observer are treated as random effects. 
+We want to build a model that predict **abundance of skylark** as a function of **agricultural area** and **landscape complexity**. The effect of agricultural land and landscape complexity on skylark is treated as a fixed effect. response to regression scale.
+
+Data are collected in different sites (**landscapes**) and by different birdwatchers (**observer**). Unexplained variation due to landscape and observer are treated as random effects. 
 
 Since the response is a count variable and we have both fixed and random effects we will use a Generalized Linear Mixed Model (GLMM).
 
@@ -80,7 +83,7 @@ summary(mod)
 ```
 
 ## Extracting information from the model
-We can extract the fixed effects using fixef(mod) and random effects using ranef(mod). In order to get the variance for the random effects we write 
+We can extract the fixed effects using *fixef(mod)* and random effects using *ranef(mod)*. In order to get the variance for the random effects we write 
 ```{r var_randomeffect}
 getME(mod,'theta')
 ```
@@ -111,7 +114,7 @@ gridExtra::grid.arrange(p1, p2, ncol=2)
 ### Predict training data
 Make predictions of bird counts for the data we have. Predictions can be made with estimated random effects, but are provided without errors or uncertainty ranges.  
 
-What are in the different columns?
+What data or information do we have in the different columns?
 ```{r pred_of_data}
 df %>% 
   select(birdcount) %>% 
@@ -156,6 +159,7 @@ df %>%
   ggplot(aes(x = sFarml_area, y = birdcount, color = landscape_type, fill = landscape_type)) +
   geom_point(aes(x = sFarml_area, y = birdcount)) +
   stat_lineribbon(data=df_pred1, aes(y = .prediction), .width = c(.95, .80, .50), alpha = 1/4) +
+  ylim(c(0,125)) +
   facet_wrap(~landscape_type) +
   labs(title = 'Bird abundance over farmland area', subtitle = "Frequentist inference + Bootstrap")
 ```
@@ -177,6 +181,7 @@ df %>%
   ggplot(aes(x = sFarml_area, y = birdcount, color = landscape_type, fill = landscape_type)) +
   geom_point(aes(x = sFarml_area, y = birdcount)) +
   stat_lineribbon(data=df_pred2, aes(y = .prediction), .width = c(.95, .80, .50), alpha = 1/4) +
+  ylim(c(0,125)) +
   facet_wrap(~landscape_type) +
   labs(title = 'Bird abundance over farmland area including landscape variability', subtitle = "Frequentist inference + Bootstrap")
 
@@ -212,6 +217,7 @@ df %>%
   ggplot(aes(x = sFarml_area, y = birdcount, color = landscape_type, fill = landscape_type)) +
   geom_point(aes(x = sFarml_area, y = birdcount)) +
   stat_lineribbon(data=df_pred_b1, aes(y = .prediction), .width = c(.95, .80, .50), alpha = 1/4) +
+  ylim(c(0,125)) +
   facet_wrap(~landscape_type) + 
   labs(title = 'Bird abundance over farmland area', subtitle = "Bayesian inference")
 ```
@@ -231,6 +237,7 @@ df %>%
   ggplot(aes(x = sFarml_area, y = birdcount, color = landscape_type, fill = landscape_type)) +
   geom_point(aes(x = sFarml_area, y = birdcount)) +
   stat_lineribbon(data=df_pred_b2, aes(y = .prediction), .width = c(.95, .80, .50), alpha = 1/4) +
+  ylim(c(0,125)) +
   facet_wrap(~landscape_type) + 
   labs(title = 'Bird abundance over farmland area including landscape variability', subtitle = "Bayesian inference")
 
@@ -238,6 +245,5 @@ df %>%
 
 # Comparison
 Is there a difference in predictions using the two approaches?
-
-Yes, but not much. 
+ 
 
